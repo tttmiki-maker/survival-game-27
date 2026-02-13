@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>無人島サバイバル - 監視強化版</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        :root { --bg: #0d1117; --panel: #161b22; --text: #58a6ff; --accent: #1f6feb; --danger: #f85149; --thief: #a371f7; }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: #c9d1d9; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: var(--panel); padding: 25px; border-radius: 12px; border: 1px solid #30363d; }
+        .btn { padding: 10px 18px; margin: 4px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; background: #21262d; color: #c9d1d9; border: 1px solid #f0f6fc1a; transition: 0.2s; }
+        .btn:hover { background: #30363d; border-color: #8b949e; }
+        .btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-success { background: #238636; color: white; }
+        .btn-thief { background: var(--thief); color: white; }
+        .btn-warn { background: #d29922; color: white; }
+        .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+        .card { background: #0d1117; padding: 15px; border-radius: 8px; border: 1px solid #30363d; position: relative; }
+        .card.my-turn { border: 2px solid var(--text); }
+        .card.dead { opacity: 0.5; background: #21262d; }
+        .log-container { background: #000; height: 200px; overflow-y: scroll; padding: 12px; text-align: left; font-family: 'Consolas', monospace; border-radius: 6px; border: 1px solid #30363d; color: #7ee787; margin: 10px 0; font-size: 0.85em; }
+        .badge { font-size: 0.75em; padding: 2px 8px; border-radius: 10px; background: var(--accent); color: white; }
+        .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: center; }
+        .modal { background: var(--panel); padding: 25px; border-radius: 10px; width: 90%; max-width: 500px; border: 1px solid var(--accent); overflow-y: auto; max-height: 80vh; }
+        .result-table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        .result-table th, .result-table td { border: 1px solid #30363d; padding: 8px; text-align: center; }
+        #kill-alert { display: none; position: fixed; top: 20%; left: 50%; transform: translate(-50%, -50%); background: rgba(100, 0, 0, 0.9); padding: 30px; border: 2px solid red; border-radius: 10px; z-index: 200; text-align: center; box-shadow: 0 0 20px red; }
+    </style>
+</head>
+<body>
+
+<div id="kill-alert"><h2 id="kill-msg"></h2></div>
+
+<div class="container">
+    <h1>🏝️ Island Survival</h1>
+    
+    <div id="setup-ui">
+        <p>Status: <strong id="conn-status" style="color:orange;">Initializing...</strong></p>
+        <p>Your ID: <strong id="my-id" style="color:var(--text);">---</strong></p>
+        <div style="margin-bottom: 20px;"><label>名前: <input type="text" id="username" value="Player" style="width: 150px;"></label></div>
+        <div id="connection-controls">
+            <button class="btn" onclick="initHost()">部屋を作る(Host)</button>
+            <input type="text" id="join-id" placeholder="Host IDを入力">
+            <button class="btn" onclick="initGuest()">参加する(Guest)</button>
+        </div>
+        <div id="lobby-list" style="margin-top:20px; color:#8b949e; background:#0d1117; padding:10px; border-radius:5px;"></div>
+        <button id="start-btn" class="btn btn-success" style="display:none; width:100%; margin-top:15px;" onclick="startGame()">サバイバル開始</button>
+    </div>
+
+    <div id="game-ui" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div><h2 id="day-label" style="display:inline;">Day 1</h2><span id="my-faction-badge" class="badge" style="margin-left:10px;">役職確認中</span></div>
+            <div id="phase-label" class="badge">ACTION PHASE</div>
+        </div>
+
+        <div id="spy-report-box" style="background: #1c2128; border: 1px solid #58a6ff; padding: 10px; border-radius: 8px; margin-bottom: 15px; display: none;">
+            <strong style="color:var(--text);">👁️ 監視レポート:</strong>
+            <div id="spy-report-content" style="font-size: 0.9em; margin-top:5px;"></div>
+        </div>
+
+        <div class="status-grid" id="status-grid"></div>
+        <div class="log-container" id="local-log"></div>
+
+        <div id="active-player-panels">
+            <div id="action-panel" style="display:none;">
+                <p><strong>💎 宝探し</strong></p>
+                <button class="btn" onclick="sendAction('treasure', 0.2, 0)">ちょっと</button>
+                <button class="btn" onclick="sendAction('treasure', 0.4, 20)">普通</button>
+                <button class="btn" onclick="sendAction('treasure', 0.6, 40)">かなり</button>
+                <button class="btn" onclick="sendAction('treasure', 0.8, 60)">最大限</button>
+                <p><strong>🎣 釣り・他</strong></p>
+                <button class="btn btn-success" onclick="sendAction('fish')">釣り</button>
+                <button class="btn" onclick="sendAction('ability')">特殊能力を得る</button>
+                <div id="thief-traps" style="display:none;">
+                    <button id="btn-food_terror" class="btn btn-thief" onclick="sendAction('trap', 'food_terror')">飯テロ</button>
+                    <button id="btn-leg_trap" class="btn btn-thief" onclick="sendAction('trap', 'leg_trap')">トラバサミ</button>
+                    <button id="btn-theft" class="btn btn-thief" onclick="openOverlay('theft')">窃盗</button>
+                    <button id="btn-extra_food" class="btn btn-thief" onclick="sendAction('trap', 'extra_food')">追加食料</button>
+                </div>
+            </div>
+
+            <div id="rest-panel" style="display:none; text-align:center;">
+                <p style="color:var(--danger)">⚠️ 大失敗により行動不能</p>
+                <button class="btn btn-success" onclick="sendAction('skip')">休息する</button>
+            </div>
+
+            <div id="interaction-panel" style="display:none;">
+                <h3>🤝 交流・投票</h3>
+                <div id="spy-section">
+                    <span id="spy-count-label"></span> 
+                    <button id="spy-btn" class="btn" onclick="openOverlay('spy')">監視を実行</button>
+                </div>
+                <div id="interact-buttons-container">
+                    相手: <select id="give-to"></select> 量: <input type="number" id="give-val" value="1" step="0.1" style="width:50px;"> 
+                    <button class="btn" onclick="performGive()">譲渡</button>
+                    <div id="kill-section" style="display:none; margin-top:10px;">
+                        <button id="btn-kill-exec" class="btn btn-danger" onclick="performKill()">殺害実行</button>
+                    </div>
+                    <div style="margin-top:10px;">
+                        追放投票: <select id="vote-to"></select> <button class="btn btn-danger" onclick="performVote()">投票</button>
+                    </div>
+                </div>
+                <button id="ready-btn" class="btn btn-success" style="width:100%; margin-top:15px;" onclick="markReady()">翌日へ</button>
+                <p id="waiting-msg" style="display:none; color: gold; text-align: center;">⌛ 他のプレイヤーを待っています...</p>
+            </div>
+        </div>
+
+        <div id="dead-player-panel" style="display:none; text-align:center; padding:20px;">
+            <h3 style="color:#8b949e;">👻 観戦中</h3>
+            <button id="dead-action-ok-btn" class="btn btn-success" style="display:none; width:100%;" onclick="sendAction('skip')">確認（次へ）</button>
+            <button id="dead-ready-btn" class="btn btn-success" style="display:none; width:100%;" onclick="markReady()">準備完了</button>
+            <p id="dead-waiting-msg" style="color: gold;">⌛ 待機中...</p>
+        </div>
+
+        <div id="host-tools" style="margin-top:20px; border-top:1px solid #30363d; padding-top:10px; display:none;">
+            <button class="btn btn-warn" onclick="forceNextDay()">⏩ 強制的に翌日へ</button>
+            <button class="btn btn-danger" onclick="emergencyReset()">⚠️ 緊急リセット</button>
+        </div>
+    </div>
+    
+    <div id="result-panel" style="display:none;">
+        <h2 id="victory-msg"></h2>
+        <div id="final-score" style="font-size:1.2em; margin-bottom:10px;"></div>
+        <table class="result-table"><tbody id="final-body"></tbody></table>
+        <button onclick="location.reload()" class="btn btn-success" style="width:100%; margin-top:20px;">ロビーへ戻る</button>
+    </div>
+</div>
+
+<div id="spy-overlay" class="overlay"><div class="modal"><h3>監視対象</h3><div id="spy-list"></div><button class="btn" onclick="closeOverlay()">閉じる</button></div></div>
+<div id="theft-overlay" class="overlay"><div class="modal"><h3>窃盗対象</h3><div id="theft-list"></div><button class="btn" onclick="closeOverlay()">閉じる</button></div></div>
+
+<script>
+    const ABILITIES = ["強靭な身体", "ベテラン", "釣り職人", "失敗保険", "ストーカー体質", "ゾンビ", "ギブアンドテイク"];
+    let peer = new Peer({ host: '0.peerjs.com', port: 443, secure: true });
+    let myId, connections = [], hostConn = null, isHost = false;
+    let gameState = { players: [], day: 1, phase: 'setup', turnIdx: -1, traps: {}, trapUsed: {}, history: [], dailyKillCount: 0 };
+    let mySpyUsedGlobal = false, currentSpyReport = "";
+
+    peer.on('open', id => { myId = id; document.getElementById('my-id').innerText = id; document.getElementById('conn-status').innerText = "Online"; document.getElementById('conn-status').style.color = "#7ee787"; });
+    peer.on('connection', conn => { if (isHost) { connections.push(conn); conn.on('data', d => handleData(d, conn)); setTimeout(() => sync(), 500); } });
+
+    function initHost() { isHost = true; addPlayer(myId, document.getElementById('username').value || "Host"); document.getElementById('start-btn').style.display = 'block'; document.getElementById('connection-controls').style.display = 'none'; document.getElementById('host-tools').style.display = 'block'; updateUI(); }
+    function initGuest() { const tid = document.getElementById('join-id').value; hostConn = peer.connect(tid); hostConn.on('open', () => { document.getElementById('connection-controls').style.display = 'none'; hostConn.send({ type: 'join', name: document.getElementById('username').value || "Guest" }); }); hostConn.on('data', d => handleData(d)); }
+    
+    function sync() { if (isHost) { connections.forEach(c => c.send({ type: 'sync', state: gameState })); updateUI(); } }
+
+    function handleData(data, conn) {
+        if (isHost && data.type === 'join') { addPlayer(conn.peer, data.name); sync(); }
+        if (data.type === 'sync') { gameState = data.state; updateUI(); }
+        if (data.type === 'kill_alert') showKillAlert(data.msg);
+
+        if (isHost) {
+            if (data.type === 'action') processAction(data);
+            if (data.type === 'ready') { const p = gameState.players.find(x => x.id === data.pId); if(p) p.ready = true; checkPhaseEnd(); }
+            if (data.type === 'kill') {
+                const f = gameState.players.find(x => x.id === data.from), t = gameState.players.find(x => x.id === data.to);
+                if (t.ability === "強靭な身体") { pushLog(`💀 ${t.name}は襲撃を耐えた！`, "#7ee787", t.id); } 
+                else { t.alive = false; gameState.dailyKillCount = 1; pushLog(`💀 ${f.name}が${t.name}を殺害！`, "#f85149"); broadcastKillAlert(`${f.name}が${t.name}を殺害しました！`); }
+                sync(); 
+            }
+            if (data.type === 'spy_request') {
+                const t = gameState.players.find(x => x.id === data.targetId);
+                // 修正：ステータスと昨日の行動カテゴリを合体
+                const report = `【監視】${t.name} | 食料:${t.food.toFixed(1)} 宝:${t.treasure.toFixed(1)} 能力:${t.ability} | 昨日の行動: ${t.yesterdayActionCategory || "不明"}`;
+                if (conn) conn.send({ type: 'spy_result', report }); else handleData({ type: 'spy_result', report });
+            }
+            if (data.type === 'give') { const f=gameState.players.find(x=>x.id===data.from), t=gameState.players.find(x=>x.id===data.to); if(f.food>=data.val){f.food-=data.val; t.food+=data.val; sync();} }
+            if (data.type === 'vote') { const t=gameState.players.find(x=>x.id===data.to); if(t.faction==='thief') finishGame("research_win"); else finishGame("thief_win"); }
+        }
+        if (data.type === 'spy_result') { currentSpyReport = data.report; mySpyUsedGlobal = true; updateUI(); }
+    }
+
+    function addPlayer(id, name) { gameState.players.push({ id, name, isCPU: false, food: 3, treasure: 0, ability: "なし", alive: true, ready: false, faction: 'research', lastActionCategory: "未行動", yesterdayActionCategory: "未行動", failFlag: false }); }
+
+    function startGame() {
+        while (gameState.players.length < 4) { let cid = "CPU"+Math.random(); gameState.players.push({ id: cid, name: "CPU-"+(gameState.players.length+1), isCPU: true, food: 3, treasure: 0, ability: "なし", alive: true, ready: false, faction: 'research', lastActionCategory: "未行動", yesterdayActionCategory: "未行動", failFlag: false }); }
+        gameState.players[Math.floor(Math.random()*gameState.players.length)].faction = 'thief';
+        gameState.phase = 'action'; gameState.day = 1; gameState.history = []; pushLog("=== サバイバル開始 ===", "gold"); sync(); nextTurn();
+    }
+
+    function processAction(data) {
+        const p = gameState.players.find(x => x.id === (data.playerId || gameState.players[gameState.turnIdx].id));
+        if(!p) return;
+        
+        if (data.action === 'treasure') {
+            p.lastActionCategory = "宝探し"; // 失敗含め宝探しカテゴリ
+            if (Math.random()*100 < data.prob) { p.failFlag = true; pushLog(`大失敗！`, "red", p.id); } 
+            else { p.treasure += data.val; pushLog(`宝入手`, "#7ee787", p.id); }
+        } else if (data.action === 'fish') {
+            p.food += 2; p.lastActionCategory = "釣り"; pushLog(`釣り成功`, "#7ee787", p.id);
+        } else if (data.action === 'trap') {
+            p.lastActionCategory = "その他";
+            if (data.val === 'extra_food') p.food += 3;
+            pushLog(`罠/特殊行動`, "orange", p.id);
+        } else {
+            p.lastActionCategory = "その他";
+            if (data.action === 'ability') p.ability = ABILITIES[Math.floor(Math.random()*ABILITIES.length)];
+            if (data.action === 'skip') p.failFlag = false;
+        }
+        sync(); setTimeout(nextTurn, 500);
+    }
+
+    function nextTurn() {
+        if (!isHost) return;
+        gameState.turnIdx++;
+        if (gameState.turnIdx >= gameState.players.length) {
+            gameState.phase = 'interaction';
+            gameState.players.forEach(p => { p.ready = (!p.alive || p.isCPU); });
+            sync(); return;
+        }
+        const n = gameState.players[gameState.turnIdx];
+        if (!n.alive) { processAction({action:'skip', playerId:n.id}); return; }
+        if (n.isCPU) setTimeout(()=>processAction({action:'treasure', val:0.4, prob:20, playerId:n.id}), 500); else sync();
+    }
+
+    function endDay() {
+        if (!isHost) return;
+        gameState.players.forEach(p => {
+            p.yesterdayActionCategory = p.lastActionCategory; 
+            p.lastActionCategory = "未行動";
+            if (p.alive) { p.food -= 1; if (p.food < 0) p.alive = false; }
+            p.ready = false;
+        });
+        gameState.day++; gameState.phase = 'action'; gameState.turnIdx = -1; gameState.dailyKillCount = 0;
+        pushLog(`--- Day ${gameState.day} 開始 ---`, "gold"); sync(); nextTurn();
+    }
+
+    function finishGame(win) {
+        gameState.phase = 'result';
+        gameState.history.push({ msg: win === "research_win" ? "🎉 調査隊の勝利！" : "💀 盗賊の勝利！" });
+        sync();
+    }
+
+    function updateUI() {
+        const me = gameState.players.find(x => x.id === myId); if (!me) return;
+        document.getElementById('setup-ui').style.display = gameState.phase === 'setup' ? 'block' : 'none';
+        document.getElementById('game-ui').style.display = (gameState.phase !== 'setup' && gameState.phase !== 'result') ? 'block' : 'none';
+        document.getElementById('result-panel').style.display = gameState.phase === 'result' ? 'block' : 'none';
+
+        if (gameState.phase === 'result') {
+            document.getElementById('victory-msg').innerText = "ゲーム終了";
+            const body = document.getElementById('final-body'); body.innerHTML = "";
+            gameState.players.forEach(p => { body.innerHTML += `<tr><td>${p.name}</td><td>${p.faction==='thief'?'盗賊':'調査'}</td><td>${p.alive?'生存':'死亡'}</td><td>宝:${p.treasure.toFixed(1)}</td></tr>`; });
+            return;
+        }
+
+        document.getElementById('day-label').innerText = "Day " + gameState.day;
+        document.getElementById('phase-label').innerText = gameState.phase.toUpperCase();
+        document.getElementById('my-faction-badge').innerText = me.faction === 'thief' ? "🕵️ 盗賊" : "🔍 調査隊";
+        document.getElementById('spy-report-box').style.display = currentSpyReport ? 'block' : 'none';
+        document.getElementById('spy-report-content').innerText = currentSpyReport;
+
+        const grid = document.getElementById('status-grid'); grid.innerHTML = "";
+        gameState.players.forEach((p, i) => {
+            const isTurn = (gameState.phase === 'action' && i === gameState.turnIdx);
+            grid.innerHTML += `<div class="card ${isTurn?'my-turn':''} ${p.alive?'':'dead'}"><strong>${p.name}</strong> ${p.ready?'✅':''}<br>${p.alive?'❤️ 生存':'💀 死亡'}<br>${p.id===myId?`🍖:${p.food.toFixed(1)} 💎:${p.treasure.toFixed(1)}<br><small>${p.ability}</small>`:''}</div>`;
+        });
+
+        const isMyTurn = (gameState.phase === 'action' && gameState.players[gameState.turnIdx]?.id === myId);
+        if (me.alive) {
+            document.getElementById('active-player-panels').style.display = 'block';
+            document.getElementById('dead-player-panel').style.display = 'none';
+            document.getElementById('action-panel').style.display = (isMyTurn && !me.failFlag) ? 'block' : 'none';
+            document.getElementById('rest-panel').style.display = (isMyTurn && me.failFlag) ? 'block' : 'none';
+            document.getElementById('thief-traps').style.display = me.faction === 'thief' ? 'block' : 'none';
+            
+            if (gameState.phase === 'interaction') {
+                document.getElementById('interaction-panel').style.display = 'block';
+                if (me.ready) {
+                    document.getElementById('interact-buttons-container').style.display = 'none';
+                    document.getElementById('ready-btn').style.display = 'none';
+                    document.getElementById('waiting-msg').style.display = 'block';
+                } else {
+                    document.getElementById('interact-buttons-container').style.display = 'block';
+                    document.getElementById('ready-btn').style.display = 'block';
+                    document.getElementById('waiting-msg').style.display = 'none';
+                    setupSelects();
+                    document.getElementById('spy-count-label').innerText = `監視: ${mySpyUsedGlobal?0:1}回`;
+                    document.getElementById('spy-btn').disabled = mySpyUsedGlobal;
+                }
+            } else { document.getElementById('interaction-panel').style.display = 'none'; }
+        } else {
+            document.getElementById('active-player-panels').style.display = 'none';
+            document.getElementById('dead-player-panel').style.display = 'block';
+            document.getElementById('dead-action-ok-btn').style.display = isMyTurn ? 'block' : 'none';
+            document.getElementById('dead-ready-btn').style.display = (gameState.phase === 'interaction' && !me.ready) ? 'block' : 'none';
+        }
+        document.getElementById('local-log').innerHTML = gameState.history.map(h => `<div>${h.msg}</div>`).join("");
+        document.getElementById('local-log').scrollTop = 9999;
+    }
+
+    function setupSelects() {
+        const gTo = document.getElementById('give-to'), vTo = document.getElementById('vote-to');
+        gTo.innerHTML = vTo.innerHTML = "";
+        gameState.players.forEach(p => { if(p.id !== myId && p.alive) { const o = `<option value="${p.id}">${p.name}</option>`; gTo.innerHTML += o; vTo.innerHTML += o; } });
+        const me = gameState.players.find(x=>x.id===myId);
+        document.getElementById('kill-section').style.display = (me.ability.includes("ゾンビ") || me.ability.includes("ギブ")) ? 'block' : 'none';
+        document.getElementById('btn-kill-exec').disabled = gameState.dailyKillCount >= 1;
+    }
+
+    function markReady() { if (isHost) { const me = gameState.players.find(x => x.id === myId); me.ready = true; checkPhaseEnd(); } else hostConn.send({ type: 'ready', pId: myId }); }
+    function checkPhaseEnd() { if (gameState.players.every(p => p.ready)) endDay(); else sync(); }
+    function pushLog(msg, color) { gameState.history.push({ msg }); if (isHost) sync(); }
+    function sendAction(type, v1, v2) { if (isHost) processAction({ action: type, val: v1, prob: v2, playerId: myId }); else hostConn.send({ type: 'action', action: type, val: v1, prob: v2, playerId: myId }); }
+    function broadcastKillAlert(msg) { connections.forEach(c => c.send({ type: 'kill_alert', msg })); showKillAlert(msg); }
+    function showKillAlert(msg) { const el = document.getElementById('kill-alert'); document.getElementById('kill-msg').innerText = msg; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 4000); }
+    function forceNextDay() { if(isHost) endDay(); }
+    function emergencyReset() { location.reload(); }
+    function performKill() { const tid = document.getElementById('give-to').value; if(isHost) handleData({type:'kill', from:myId, to:tid}); else hostConn.send({type:'kill', from:myId, to:tid}); }
+    function performVote() { const tid = document.getElementById('vote-to').value; if(isHost) handleData({type:'vote', to:tid}); else hostConn.send({type:'vote', to:tid}); }
+    function performGive() { const tid = document.getElementById('give-to').value, val = parseFloat(document.getElementById('give-val').value); if(isHost) handleData({type:'give', from:myId, to:tid, val}); else hostConn.send({type:'give', from:myId, to:tid, val}); }
+    function openOverlay(id) { document.getElementById(id + '-overlay').style.display = 'flex'; const list = document.getElementById(id + '-list'); list.innerHTML = ""; gameState.players.forEach(p => { if (p.id !== myId && p.alive) list.innerHTML += `<button class="btn" onclick="execute${id.charAt(0).toUpperCase()+id.slice(1)}('${p.id}')">${p.name}</button>`; }); }
+    function closeOverlay() { document.querySelectorAll('.overlay').forEach(o => o.style.display = 'none'); }
+    function executeSpy(tid) { if(isHost) handleData({type:'spy_request', targetId:tid}); else hostConn.send({type:'spy_request', targetId:tid}); closeOverlay(); }
+    function executeTheft(tid) { if(isHost) processAction({action:'trap', val:'theft', targetId:tid, playerId:myId}); else hostConn.send({action:'trap', val:'theft', targetId:tid, playerId:myId}); closeOverlay(); }
+</script>
+</body>
+</html>
